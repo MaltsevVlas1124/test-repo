@@ -21,7 +21,7 @@ jobs:
 
       - name: Clone source repository
         env:
-          SOURCE_REPO: https://github.com/USER/SOURCE-REPO.git  # Замінити на реальне
+          SOURCE_REPO: https://github.com/MaltsevVlas1124/statementsToConvert-fork  # Замінити на реальне
         run: |
           git clone --depth=1 --branch original-filtered $SOURCE_REPO source-repo
 
