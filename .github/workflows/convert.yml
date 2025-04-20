@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'MaltsevVlas1124/statementsToConvert-fork'
+        description: 'Source repository (e.g., your-username/repo-a)'
         required: true
       source_branch:
-        description: 'original-filtered'
+        description: 'Branch in source repository to convert from'
         required: true
         default: 'original-filtered'
       output_branch:
