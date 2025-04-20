@@ -86,7 +86,7 @@ jobs:
                    "$tex_file" || echo "Warning: Failed for $tex_file"
           done
 
-      - name: Commit and push to output branch
+       - name: Commit and push to output branch
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -95,6 +95,10 @@ jobs:
 
           git rm -rf .
           git clean -fdx
+
+          # Remove any git metadata from source repo
+          rm -rf "${SOURCE_CHECKOUT_DIR}/.git"
+          rm -f .gitmodules
 
           if [ -d "${OUTPUT_DIR}" ] && [ "$(ls -A $OUTPUT_DIR)" ]; then
             cp -r ${OUTPUT_DIR}/* .
