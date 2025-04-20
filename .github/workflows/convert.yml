@@ -1,99 +1,81 @@
-name: Convert LaTeX from Remote Repo to Markdown
+name: Convert LaTeX to Markdown
 
 on:
   workflow_dispatch:
-    inputs:
-      source_repo:
-        description: 'Source repository (e.g., your-username/repo-a)'
-        required: true
-      source_branch:
-        description: 'Branch in source repository to convert from'
-        required: true
-        default: 'original-filtered'
-      output_branch:
-        description: 'Branch in this repository to push converted files to'
-        required: true
-        default: 'markdown-conversion'
-
-permissions:
-  contents: write
-
-env:
-  OUTPUT_DIR: ./markdown_output
-  SOURCE_CHECKOUT_DIR: ./source_repo_temp
 
 jobs:
-  convert_from_remote:
+  convert:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout this repository (Repo B)
-        uses: actions/checkout@v4
-
-      - name: Checkout source repository (Repo A)
+      - name: Checkout current repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.source_repo }}
-          ref: ${{ github.event.inputs.source_branch }}
-          path: ${{ env.SOURCE_CHECKOUT_DIR }}
-          token: ${{ secrets.REPO_A_PAT }}
+          fetch-depth: 0  # Забираємо всі гілки
 
-      - name: Set up Pandoc
-        uses: r-lib/actions/setup-pandoc@v2
-
-      - name: Set up TeX Live
-        uses: teatimeguest/setup-texlive-action@v3
-        with:
-          packages: scheme-medium
-
-      - name: Convert TeX to Markdown
+      - name: Set up Python and Pandoc
         run: |
-          mkdir -p "${OUTPUT_DIR}"
+          sudo apt-get update
+          sudo apt-get install -y pandoc python3 python3-pip
+          pip install GitPython
 
-          find "${SOURCE_CHECKOUT_DIR}" -type f -name '*.tex' -print0 | while IFS= read -r -d '' tex_file; do
-            rel_path="${tex_file#${SOURCE_CHECKOUT_DIR}/}"
-            [ "${rel_path}" = "$tex_file" ] && continue
-
-            # Пропустити зайве
-            [[ "$rel_path" == ".git/"* || "$rel_path" == *".sty" ]] && continue
-
-            out_md="${OUTPUT_DIR}/${rel_path%.tex}.md"
-            mkdir -p "$(dirname "$out_md")"
-
-            echo "Converting $tex_file to $out_md"
-            pandoc --from=latex+raw_tex \
-                   --to=gfm \
-                   --output="$out_md" \
-                   --resource-path="${SOURCE_CHECKOUT_DIR}:$(dirname "$tex_file")" \
-                   --citeproc \
-                   --wrap=none \
-                   "$tex_file" || echo "Warning: Pandoc failed for $tex_file"
-          done
-
-      - name: Commit and push to output branch
+      - name: Clone source repository
+        env:
+          SOURCE_REPO: https://github.com/USER/SOURCE-REPO.git  # Замінити на реальне
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone --depth=1 --branch original-filtered $SOURCE_REPO source-repo
 
-          git checkout -B "${{ github.event.inputs.output_branch }}"
+      - name: Prepare conversion script
+        run: |
+          cat << 'EOF' > convert.py
+          import os
+          import subprocess
+          import shutil
 
-          git rm -rf .
-          git clean -fdx
+          source_dir = 'source-repo'
+          target_dir = 'converted-files'
+          os.makedirs(target_dir, exist_ok=True)
 
-          rm -rf "${SOURCE_CHECKOUT_DIR}/.git"
-          rm -f .gitmodules
+          for root, dirs, files in os.walk(source_dir):
+              rel_root = os.path.relpath(root, source_dir)
+              target_root = os.path.join(target_dir, rel_root)
+              os.makedirs(target_root, exist_ok=True)
 
-          if [ -d "${OUTPUT_DIR}" ] && [ "$(ls -A "${OUTPUT_DIR}")" ]; then
-            cp -r ${OUTPUT_DIR}/* .
-          else
-            echo "No files to commit"
-            touch .empty_conversion_result
-          fi
+              for file in files:
+                  source_path = os.path.join(root, file)
+                  target_path = os.path.join(target_root, file)
 
-          git add -A
+                  if file.endswith('.tex'):
+                      base_name = os.path.splitext(file)[0]
+                      md_target = os.path.join(target_root, base_name + '.md')
+                      try:
+                          subprocess.run(
+                              ['pandoc', source_path, '-o', md_target, '--from=latex', '--to=markdown'],
+                              check=True
+                          )
+                          print(f"Converted {source_path} to {md_target}")
+                      except subprocess.CalledProcessError:
+                          # Якщо конвертація не вдалася, просто копіюємо оригінал
+                          shutil.copy2(source_path, target_path)
+                          print(f"Failed to convert {source_path}, copied original.")
+                  else:
+                      shutil.copy2(source_path, target_path)
+          EOF
 
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Converted LaTeX to Markdown from ${{ github.event.inputs.source_repo }}/${{ github.event.inputs.source_branch }}"
-            git push --force origin "${{ github.event.inputs.output_branch }}"
-          fi
+      - name: Run conversion
+        run: |
+          python3 convert.py
+
+      - name: Create and push new branch
+        env:
+          TARGET_BRANCH: converted-md
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          
+          git checkout -b $TARGET_BRANCH
+          rm -rf *
+          cp -r converted-files/* .
+          git add .
+          git commit -m "Convert .tex to .md where possible"
+          git push origin $TARGET_BRANCH --force
