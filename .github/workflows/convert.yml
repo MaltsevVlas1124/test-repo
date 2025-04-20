@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Source repository (e.g., your-username/repo-a)'
+        description: 'Source repository (e.g., user/repo-a)'
         required: true
       source_branch:
         description: 'Branch in source repository to convert from'
@@ -15,7 +15,7 @@ on:
         required: true
         default: 'markdown-conversion'
       source_repo_pat:
-        description: 'Personal Access Token (PAT) if source repo is private (use Secrets)'
+        description: 'PAT for private source repo (if needed)'
         required: false
 
 permissions:
@@ -28,101 +28,92 @@ env:
 jobs:
   convert_from_remote:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. Checkout this repository (Repo B)
       - name: Checkout current repository (Repo B)
         uses: actions/checkout@v4
 
-      # 2. Clone source repository (Repo A) manually
       - name: Clone source repository (Repo A)
-        run: |
-          echo "Cloning source repository ${{ github.event.inputs.source_repo }}..."
-          AUTH_TOKEN="${{ github.event.inputs.source_repo_pat || secrets.REPO_A_PAT }}"
-          if [ -n "$AUTH_TOKEN" ]; then
-            git clone --depth=1 --branch "${{ github.event.inputs.source_branch }}" \
-              "https://${AUTH_TOKEN}@github.com/${{ github.event.inputs.source_repo }}" \
-              "${{ env.SOURCE_CHECKOUT_DIR }}"
-          else
-            git clone --depth=1 --branch "${{ github.event.inputs.source_branch }}" \
-              "https://github.com/${{ github.event.inputs.source_repo }}" \
-              "${{ env.SOURCE_CHECKOUT_DIR }}"
-          fi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.source_repo }}
+          ref: ${{ github.event.inputs.source_branch }}
+          path: ${{ env.SOURCE_CHECKOUT_DIR }}
+          token: ${{ secrets.REPO_A_PAT }}
 
-      # 3. Install Pandoc (already usually available, but just in case)
-      - name: Install Pandoc
-        run: sudo apt-get update && sudo apt-get install -y pandoc
+      - name: Set up Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
 
-      # 4. Set up TeX Live
       - name: Set up TeX Live
         uses: teatimeguest/setup-texlive-action@v3
         with:
           packages: scheme-medium
 
-      - name: Cache TeX Live directory
+      - name: Cache TeX Live
         uses: actions/cache@v4
         with:
           path: /usr/local/texlive/
           key: ${{ runner.os }}-texlive-${{ hashFiles('**/configure-texlive.sh') }}
 
-      # 5. Convert LaTeX files
       - name: Convert TeX to Markdown
         run: |
-          echo "Starting conversion from ${{ github.event.inputs.source_repo }}/${{ github.event.inputs.source_branch }}..."
-          mkdir -p "${{ env.OUTPUT_DIR }}"
+          SOURCE_DIR="${{ env.SOURCE_CHECKOUT_DIR }}"
+          OUTPUT_DIR="${{ env.OUTPUT_DIR }}"
+          echo "Starting conversion from $SOURCE_DIR"
 
-          find "${{ env.SOURCE_CHECKOUT_DIR }}" -type f -name '*.tex' -print0 | while IFS= read -r -d $'\0' tex_file; do
-              relative_path_in_source="${tex_file#${env.SOURCE_CHECKOUT_DIR}/}"
+          mkdir -p "$OUTPUT_DIR"
 
-              if [[ "$relative_path_in_source" == ".git/"* || "$relative_path_in_source" == *".sty" ]]; then
-                  echo "Skipping auxiliary/git file: $tex_file"
-                  continue
-              fi
+          tex_count=$(find "$SOURCE_DIR" -type f -name '*.tex' | wc -l)
+          if [ "$tex_count" -eq 0 ]; then
+            echo "No .tex files found. Exiting."
+            exit 0
+          fi
 
-              md_file="${{ env.OUTPUT_DIR }}/$relative_path_in_source"
-              md_file="${md_file%.tex}.md"
-              md_dir=$(dirname "$md_file")
+          find "$SOURCE_DIR" -type f -name '*.tex' -print0 | while IFS= read -r -d '' tex_file; do
+            relative="${tex_file#$SOURCE_DIR/}"
+            [[ "$relative" == ".git/"* || "$relative" == *".sty" ]] && continue
 
-              echo "Converting: $tex_file -> $md_file"
-              mkdir -p "$md_dir"
+            md_file="$OUTPUT_DIR/${relative%.tex}.md"
+            mkdir -p "$(dirname "$md_file")"
 
-              pandoc --from latex+raw_tex \
-                     --to gfm \
-                     --output "$md_file" \
-                     --resource-path="${{ env.SOURCE_CHECKOUT_DIR }}:$(dirname "$tex_file")" \
-                     --citeproc \
-                     --wrap=none \
-                     "$tex_file" || echo "Warning: Pandoc failed or had warnings for $tex_file. Continuing..."
+            echo "Converting $relative → $(basename "$md_file")"
+            pandoc --from latex+raw_tex \
+                   --to gfm \
+                   --output "$md_file" \
+                   --resource-path="$SOURCE_DIR:$(dirname "$tex_file")" \
+                   --citeproc \
+                   --wrap=none \
+                   "$tex_file" || echo "⚠️ Pandoc failed on $tex_file"
           done
-          echo "Conversion finished. Results are in ${{ env.OUTPUT_DIR }}"
 
-      # 6. Commit and push results
+          echo "Conversion completed."
+
       - name: Commit and Push to Output Branch in Repo B
         run: |
+          OUTPUT_DIR="${{ env.OUTPUT_DIR }}"
           TARGET_BRANCH="${{ github.event.inputs.output_branch }}"
-          echo "Preparing to push to branch: $TARGET_BRANCH in this repository"
-
+          
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
           git checkout -B "$TARGET_BRANCH"
 
-          git rm -rf .
-          git clean -fdx
+          # Очистити все крім .git та .github
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" -exec rm -rf {} +
 
-          echo "Copying converted files from ${{ env.OUTPUT_DIR }} to root"
-          if [ -d "${{ env.OUTPUT_DIR }}" ] && [ "$(ls -A ${{ env.OUTPUT_DIR }})" ]; then
-             cp -r ${{ env.OUTPUT_DIR }}/* .
+          if [ -d "$OUTPUT_DIR" ] && [ "$(ls -A "$OUTPUT_DIR")" ]; then
+            cp -r "$OUTPUT_DIR"/* .
           else
-             echo "Warning: Output directory ${{ env.OUTPUT_DIR }} is empty or does not exist."
-             touch .empty_conversion_result
+            echo "⚠️ Output directory is empty. Creating placeholder file."
+            touch .empty_conversion_result
           fi
 
-          git add -A .
+          git add -A
 
           if git diff --staged --quiet; then
-            echo "No changes detected in $TARGET_BRANCH after conversion."
+            echo "✅ No changes to commit."
           else
-            git commit -m "Automated conversion from ${{ github.event.inputs.source_repo }}/${{ github.event.inputs.source_branch }}"
+            git commit -m "Converted LaTeX from ${{ github.event.inputs.source_repo }} @ ${{ github.event.inputs.source_branch }}"
             git push --force origin "$TARGET_BRANCH"
-            echo "Successfully pushed converted files to branch $TARGET_BRANCH in this repository."
+            echo "✅ Pushed to $TARGET_BRANCH"
           fi
