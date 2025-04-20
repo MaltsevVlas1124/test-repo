@@ -13,7 +13,7 @@ jobs:
         with:
           fetch-depth: 0  # Забираємо всі гілки
 
-      - name: Set up Python and Pandoc
+      - name: Set up Pandoc and Python
         run: |
           sudo apt-get update
           sudo apt-get install -y pandoc python3 python3-pip
@@ -21,7 +21,7 @@ jobs:
 
       - name: Clone source repository
         env:
-          SOURCE_REPO: https://github.com/MaltsevVlas1124/statementsToConvert-fork  # Замінити на реальне
+          SOURCE_REPO: https://github.com/MaltsevVlas1124/statementsToConvert-fork  # <<<--- ЗАМІНИ сюди адресу репозиторію-джерела
         run: |
           git clone --depth=1 --branch original-filtered $SOURCE_REPO source-repo
 
@@ -51,18 +51,22 @@ jobs:
                       try:
                           subprocess.run(
                               ['pandoc', source_path, '-o', md_target, '--from=latex', '--to=markdown'],
-                              check=True
+                              check=True,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
                           )
-                          print(f"Converted {source_path} to {md_target}")
-                      except subprocess.CalledProcessError:
-                          # Якщо конвертація не вдалася, просто копіюємо оригінал
+                          print(f"\033[92m[SUCCESS]\033[0m Converted {source_path} -> {md_target}")
+                      except subprocess.CalledProcessError as e:
                           shutil.copy2(source_path, target_path)
-                          print(f"Failed to convert {source_path}, copied original.")
+                          print(f"\033[91m[FAILED]\033[0m Could not convert {source_path}, copied original.")
                   else:
                       shutil.copy2(source_path, target_path)
+
+          # Move final result to the root directory
+          shutil.move('converted-files', '../converted-files')
           EOF
 
-      - name: Run conversion
+      - name: Run conversion script
         run: |
           python3 convert.py
 
@@ -72,10 +76,10 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          
+
           git checkout -b $TARGET_BRANCH
           rm -rf *
-          cp -r converted-files/* .
+          cp -r ../converted-files/* .
           git add .
-          git commit -m "Convert .tex to .md where possible"
+          git commit -m "Converted .tex files to .md where possible"
           git push origin $TARGET_BRANCH --force
