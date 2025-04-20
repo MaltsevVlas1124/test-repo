@@ -14,77 +14,70 @@ on:
         description: 'Branch in this repository to push converted files to'
         required: true
         default: 'markdown-conversion'
-      # Додатковий інпут для PAT, якщо вихідний репозиторій приватний
       source_repo_pat:
-        description: 'Personal Access Token (PAT) with repo scope if source repo is private (use Secrets)'
-        required: false # Не обов'язковий, якщо репо публічне
+        description: 'Personal Access Token (PAT) if source repo is private (use Secrets)'
+        required: false
 
 permissions:
-  contents: write # Дозвіл на запис у ЦЕЙ репозиторій (Repo B)
+  contents: write
 
 env:
-  OUTPUT_DIR: ./markdown_output # Тимчасова папка для MD файлів
-  SOURCE_CHECKOUT_DIR: ./source_repo_temp # Тимчасова папка для клону Repo A
+  OUTPUT_DIR: ./markdown_output
+  SOURCE_CHECKOUT_DIR: ./source_repo_temp
 
 jobs:
   convert_from_remote:
     runs-on: ubuntu-latest
     steps:
-      # 1. Checkout ЦЬОГО репозиторію (Repo B) - для того, щоб мати куди комітити
+      # 1. Checkout this repository (Repo B)
       - name: Checkout current repository (Repo B)
         uses: actions/checkout@v4
-        # Ми будемо створювати/перезаписувати гілку, тому історія не важлива
-        # with:
-        #   fetch-depth: 0
 
-      # 2. Clone вихідного репозиторію (Repo A) у підпапку
+      # 2. Clone source repository (Repo A) manually
       - name: Clone source repository (Repo A)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.inputs.source_repo }} # Репозиторій, вказаний при запуску
-          ref: ${{ github.event.inputs.source_branch }}      # Гілка, вказана при запуску
-          path: ${{ env.SOURCE_CHECKOUT_DIR }}              # Клонувати У підпапку
-          # --- Аутентифікація для приватного Repo A ---
-          # Якщо Repo A приватний, потрібно передати Personal Access Token (PAT)
-          # Збережіть PAT як секрет у Repo B (Settings -> Secrets and variables -> Actions -> New repository secret)
-          # Назвіть секрет, наприклад, REPO_A_PAT
-          token: ${{ secrets.REPO_A_PAT || github.event.inputs.source_repo_pat }} # Використовувати секрет або прямий інпут (менш безпечно)
+        run: |
+          echo "Cloning source repository ${{ github.event.inputs.source_repo }}..."
+          AUTH_TOKEN="${{ github.event.inputs.source_repo_pat || secrets.REPO_A_PAT }}"
+          if [ -n "$AUTH_TOKEN" ]; then
+            git clone --depth=1 --branch "${{ github.event.inputs.source_branch }}" \
+              "https://${AUTH_TOKEN}@github.com/${{ github.event.inputs.source_repo }}" \
+              "${{ env.SOURCE_CHECKOUT_DIR }}"
+          else
+            git clone --depth=1 --branch "${{ github.event.inputs.source_branch }}" \
+              "https://github.com/${{ github.event.inputs.source_repo }}" \
+              "${{ env.SOURCE_CHECKOUT_DIR }}"
+          fi
 
-      # 3. Встановити Pandoc
-      - name: Set up Pandoc
-        uses: pandoc/setup-pandoc@v3
-        with:
-          version: 'latest'
+      # 3. Install Pandoc (already usually available, but just in case)
+      - name: Install Pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
 
-      # 4. Встановити TeX Live
+      # 4. Set up TeX Live
       - name: Set up TeX Live
         uses: teatimeguest/setup-texlive-action@v3
         with:
           packages: scheme-medium
+
       - name: Cache TeX Live directory
         uses: actions/cache@v4
         with:
           path: /usr/local/texlive/
           key: ${{ runner.os }}-texlive-${{ hashFiles('**/configure-texlive.sh') }}
 
-      # 5. Виконати конвертацію, працюючи з файлами у SOURCE_CHECKOUT_DIR
+      # 5. Convert LaTeX files
       - name: Convert TeX to Markdown
         run: |
           echo "Starting conversion from ${{ github.event.inputs.source_repo }}/${{ github.event.inputs.source_branch }}..."
-          mkdir -p ${{ env.OUTPUT_DIR }}
+          mkdir -p "${{ env.OUTPUT_DIR }}"
 
-          # Знаходимо .tex файли У ПІДПАПЦІ, куди склонували Repo A
           find "${{ env.SOURCE_CHECKOUT_DIR }}" -type f -name '*.tex' -print0 | while IFS= read -r -d $'\0' tex_file; do
-              # Визначаємо відносний шлях ВСЕРЕДИНІ SOURCE_CHECKOUT_DIR
               relative_path_in_source="${tex_file#${env.SOURCE_CHECKOUT_DIR}/}"
 
-              # Пропускаємо файли, які можуть бути частиною самого LaTeX (.sty etc) або в .git
               if [[ "$relative_path_in_source" == ".git/"* || "$relative_path_in_source" == *".sty" ]]; then
                   echo "Skipping auxiliary/git file: $tex_file"
                   continue
               fi
 
-              # Формуємо шлях для вихідного MD файлу у OUTPUT_DIR
               md_file="${{ env.OUTPUT_DIR }}/$relative_path_in_source"
               md_file="${md_file%.tex}.md"
               md_dir=$(dirname "$md_file")
@@ -92,8 +85,6 @@ jobs:
               echo "Converting: $tex_file -> $md_file"
               mkdir -p "$md_dir"
 
-              # Запускаємо Pandoc
-              # ВАЖЛИВО: --resource-path має вказувати на кореневу папку склонованого Repo A
               pandoc --from latex+raw_tex \
                      --to gfm \
                      --output "$md_file" \
@@ -103,51 +94,35 @@ jobs:
                      "$tex_file" || echo "Warning: Pandoc failed or had warnings for $tex_file. Continuing..."
           done
           echo "Conversion finished. Results are in ${{ env.OUTPUT_DIR }}"
-          # Можна видалити склонований репозиторій для економії місця
-          # rm -rf ${{ env.SOURCE_CHECKOUT_DIR }}
 
-      # 6. Закомітити результати у цільову гілку ЦЬОГО репозиторію (Repo B)
+      # 6. Commit and push results
       - name: Commit and Push to Output Branch in Repo B
         run: |
           TARGET_BRANCH="${{ github.event.inputs.output_branch }}"
           echo "Preparing to push to branch: $TARGET_BRANCH in this repository"
 
-          # Налаштування Git
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-          # Перемикаємось на цільову гілку (створюємо, якщо не існує)
           git checkout -B "$TARGET_BRANCH"
 
-          # Очищуємо робочу директорію (Repo B) від файлів попереднього checkout
-          # (напр., самого файлу workflow), щоб в гілці були тільки результати.
-          # Обережно!
           git rm -rf .
           git clean -fdx
 
-          # Копіюємо результати конвертації з OUTPUT_DIR в корінь Repo B
           echo "Copying converted files from ${{ env.OUTPUT_DIR }} to root"
-          # Перевіряємо, чи є що копіювати
           if [ -d "${{ env.OUTPUT_DIR }}" ] && [ "$(ls -A ${{ env.OUTPUT_DIR }})" ]; then
              cp -r ${{ env.OUTPUT_DIR }}/* .
-             # Перевірка: ls -la
           else
              echo "Warning: Output directory ${{ env.OUTPUT_DIR }} is empty or does not exist."
-             # Створюємо пустий файл, щоб коміт не був зовсім порожнім (опціонально)
              touch .empty_conversion_result
           fi
 
-          # Додаємо всі нові файли
           git add -A .
 
-          # Перевірка, чи є що комітити
           if git diff --staged --quiet; then
             echo "No changes detected in $TARGET_BRANCH after conversion."
           else
-            # Створюємо коміт
             git commit -m "Automated conversion from ${{ github.event.inputs.source_repo }}/${{ github.event.inputs.source_branch }}"
-            echo "Pushing changes to $TARGET_BRANCH..."
-            # Пушимо в цільову гілку Repo B з --force
             git push --force origin "$TARGET_BRANCH"
             echo "Successfully pushed converted files to branch $TARGET_BRANCH in this repository."
           fi
