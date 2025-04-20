@@ -11,7 +11,7 @@ jobs:
       - name: Checkout current repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Забираємо всі гілки
+          fetch-depth: 0
 
       - name: Set up Pandoc and Python
         run: |
@@ -21,7 +21,7 @@ jobs:
 
       - name: Clone source repository
         env:
-          SOURCE_REPO: https://github.com/MaltsevVlas1124/statementsToConvert-fork  # <<<--- ЗАМІНИ сюди адресу репозиторію-джерела
+          SOURCE_REPO: https://github.com/USER/SOURCE-REPO.git  # <<< Заміни це!
         run: |
           git clone --depth=1 --branch original-filtered $SOURCE_REPO source-repo
 
@@ -31,6 +31,7 @@ jobs:
           import os
           import subprocess
           import shutil
+          from datetime import datetime
 
           source_dir = 'source-repo'
           target_dir = 'converted-files'
@@ -56,30 +57,31 @@ jobs:
                               stderr=subprocess.PIPE,
                           )
                           print(f"\033[92m[SUCCESS]\033[0m Converted {source_path} -> {md_target}")
-                      except subprocess.CalledProcessError as e:
+                      except subprocess.CalledProcessError:
                           shutil.copy2(source_path, target_path)
                           print(f"\033[91m[FAILED]\033[0m Could not convert {source_path}, copied original.")
                   else:
                       shutil.copy2(source_path, target_path)
 
-          # Move final result to the root directory
           shutil.move('converted-files', '../converted-files')
           EOF
 
-      - name: Run conversion script
+      - name: Run conversion
         run: |
           python3 convert.py
 
       - name: Create and push new branch
         env:
-          TARGET_BRANCH: converted-md
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          BRANCH_NAME="converted-$(date +%Y%m%d)"
+
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git checkout -b $TARGET_BRANCH
+          git checkout -b $BRANCH_NAME
           rm -rf *
           cp -r ../converted-files/* .
           git add .
-          git commit -m "Converted .tex files to .md where possible"
-          git push origin $TARGET_BRANCH --force
+          git commit -m "Converted .tex files to .md where possible on $BRANCH_NAME"
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} $BRANCH_NAME --force
